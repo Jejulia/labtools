@@ -626,7 +626,8 @@ def root():
     export.pack(pady = 5)
     cancel.pack(pady = 5)
     rootwind.mainloop()
-entry()
-while exp == True:
-    currentlibrary.export()
+while __name__ == '__main__':
+    entry()
+    while exp == True:
+        currentlibrary.export()
 
