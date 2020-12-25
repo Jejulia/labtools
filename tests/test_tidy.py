@@ -1,8 +1,8 @@
-import pytest
+#import pytest
+import labtools.tidy as lbt
 
-from labtools.example import hello
 
-
+"""
 @pytest.mark.parametrize(
     ("name", "expected"),
     [
@@ -17,6 +17,5 @@ from labtools.example import hello
         ("Isabella", "Hello Isabella!"),
     ],
 )
-def test_hello(name, expected):
-    """Example test with parametrization."""
-    assert hello(name) == expected
+"""
+
