@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 import scipy.stats as ss
+import scipy.linalg as sl
 import statsmodels.api as sm
 import matplotlib.pyplot as plt
 from tkinter.filedialog import askopenfilename, asksaveasfilename
@@ -33,26 +34,45 @@ class lm():
         self.x = x
         self.y = y
         self.w = w
-        self.model = sm.WLS(y,sm.add_constant(x),weights = self.w)
-        self.fit = self.model.fit()
-    def accuracy(self):
-        return (self.y-self.fit.params[0])/self.fit.params[1]/self.x
-    def residual(self):
-        return (self.y-self.fit.params[0])/self.fit.params[1]-self.x
-    def vscore(self,target="accuracy"):
-        if target == "accuracy":
-            return (self.y-self.fit.params[0])/self.fit.params[1]/self.x
-        elif target == "residual":
-            return (self.y-self.fit.params[0])/self.fit.params[1]-self.x
-    def score(self,target="accuracy"):
-        if target == "accuracy":
-            return np.dot((self.accuracy()-1),(self.accuracy()-1))/(len(self.y)-1)
-        elif target == "residual":
-            return np.dot(self.residual(),self.residual())/(len(self.y)-1)
+        self.nobs = len(self.x)
+    def fit(self):
+        self.X = sm.add_constant(self.x)
+        w = np.sqrt(self.w)
+        X = w[:, None] * self.X
+        Y = w[:, None] * self.y[:,None]
+        F = np.dot(X.T,X)
+        U = sl.cholesky(F)
+        z = sl.solve(U.T,np.dot(X.T,Y))
+        self.beta = sl.solve(U,z).ravel()
+        yhat = self.predict(self.x)
+        self.rsquared = 1 - ((w * yhat - Y.ravel())**2).sum()/(self.w * (self.y - np.average(self.y, weights = self.w))**2).sum()
+    def predict(self,x):
+        if x.shape[0] == 1:
+            x = np.array([1, x[0]])
+        else:
+            x = sm.add_constant(x)
+        return np.dot(x,self.beta)
+    def invpred(self,y):
+        return (y-self.beta[0])/self.beta[1]
+    def score(self,target):
+        return target(self.x,self.y,self.beta)
 
-
+### target functions
+def xaccuracy(x,y,params):
+    return (y-params[0])/params[1]/x
+def xbias(x,y,params):
+    return xaccuracy(x,y,params)-1
+def xresidual(x,y,params):
+    return (y-params[0])/params[1]-x
+def yaccuracy(x,y,params):
+    return (params[1]*x+params[0])/y
+def ybias(x,y,params):
+    return yaccuracy(x,y,params)-1
+def yresidual(x,y,params):
+    return (params[1]*x+params[0])-y
+    
 class calibration():
-    def __init__(self,df,name,sample = 'none'):
+    def __init__(self,df,name,sample = None):
         self.data_cal = df
         self.data_sample = sample
         self.name = name
@@ -60,37 +80,39 @@ class calibration():
         self.nlevel = len(self.data_cal['x'].unique())
     def accuracy(self,x,y,params):
         return (y-params[0])/params[1]/x
-    def fit(self,optimize = True,target = "accuracy",crit = 0.15, lloq_crit = 0.2, 
-            order = 'range' , rangemode = 'auto', selectmode = 'hloq stepdown',
-            lloq = 0, hloq = -1, weights = ['1','1/x^0.5','1/x','1/x^2'], fixpoints = [], model = lm,
-            repeat_weight = True):
+    def fit(self, model = lm, target = xbias, crit = 0.15, lloq_crit = 0.2, **kwargs):
         # avalible order: 'range', 'weight'
         # available rangemode: 'auto', 'unlimited'
         # available weights: '1','1/x^0.5','1/x','1/x^2','1/y^0.5','1/y','1/y^2'
         # available selectmode: 'hloq stepdown','lloq stepup','sequantial stepdownup','sequantial stepupdown'
-        om = op.linear(name = self.name,data_cal = self.data_cal,data_sample = self.data_sample,optimize = optimize,target = target,
-                             crit = crit, lloq_crit = lloq_crit, order = order , rangemode = rangemode, selectmode = selectmode,
-                             lloq = lloq, hloq = hloq, weights = weights, fixpoints = fixpoints,repeat_weight = repeat_weight)
+        kwdict = dict(order = 'weight' , rangemode = 'auto', selectmode = 'hloq stepdown',
+            lloq = 0, hloq = -1, weights = ['1','1/x^0.5','1/x','1/x^2'], fixpoints = [],repeat_weight = True)
+        for k,v in kwargs.items():
+            kwdict[k] = v
+        om = op.linear(self.data_cal, self.data_sample, target, crit, lloq_crit, **kwdict)
+        print(self.name)
         om.fit(model)
         self.model = om.model
-        self.data_cal['select'] = om.select_p
+        self.data_cal['select'] = om.select_final
         self.data_cal['weight'] = om.weight_type[om.weight](om.x,om.y)
+        self.weight = om.weight
+        self.data_cal['accuracy'] = self.accuracy(om.x,om.y,self.model.beta)
         print('done')
         del om
-    def quantify(self,rangelimit):
-        self.data_sample['x'] = (self.data_sample['y']-self.model.fit.params[0])/self.model.fit.params[1]
-        if rangelimit == True:
-            for i in self.data_sample['x']:
-                if i < min(self.model.x):
-                    self.data_sample.loc[self.data_sample['x'] == i,'x'] = '{}(< LLOQ)'.format(round(i,3))
-                elif i > max(self.model.x):
-                    self.data_sample.loc[self.data_sample['x'] == i,'x'] = '{}(> HLOQ)'.format(round(i,3))
+    def quantify(self,limit=False):
+        self.data_sample['x'] = self.model.invpred(self.data_sample['y'])
+        if limit:
+            for conc in self.data_sample['x']:
+                if conc < min(self.model.x):
+                    self.data_sample.loc[self.data_sample['x'] == conc,'x'] = '< LLOQ'
+                elif conc > max(self.model.x):
+                    self.data_sample.loc[self.data_sample['x'] == conc,'x'] = '> HLOQ'
     def drop_level(self,level):
         self.data_cal = self.data_cal.drop(level)
         self.nobs = len(self.data_cal.index)
         self.nlevel = len(self.data_cal['x'].unique())
     def drop_obs(self,obs):
-        self.data_cal = self.data_cal.drop(obs)
+        self.data_cal = self.data_cal.iloc[[i for i in range(self.nobs) if i not in obs],:]
         self.nobs = len(self.data_cal.index)
         self.nlevel = len(self.data_cal['x'].unique())
 
@@ -99,7 +121,7 @@ class batch():
         self.data_cal = data_cal
         self.data_sample = data_sample
         self.data_val = data_val
-        self.list = []
+        self.calibration = []
         df = self.data_cal
         if MultiIndex == True:
             x = [float(i) for i in list(zip(*df.index))[0]]
@@ -115,45 +137,25 @@ class batch():
                 dfa = pd.DataFrame({'x': x,'y': y,'select': score, 'accuracy': score,'weight': weight},index = index)
             elif index_var == 'y':
                 dfa = pd.DataFrame({'x': y,'y': x,'select': score, 'accuracy': score,'weight': weight},index = index)
-            self.list.append(calibration(dfa,name))
+            self.calibration.append(calibration(dfa,name))
     def add_sample(self,sample):
-        for i in range(len(self.list)):
+        for i in range(len(self.calibration)):
             index = sample.index
             y = sample.iloc[:,i].values
             x = np.zeros(len(y))
             dfb = pd.DataFrame({'x': x,'y': y},index = index) 
-            self.list[i].data_sample = dfb
+            self.calibration[i].data_sample = dfb
         self.data_sample = sample
-    def quantify(self,rangelimit = False):
+    def quantify(self,limit=False):
         self.results = self.data_sample.copy()
-        if rangelimit == True:
-            for i,j in enumerate(self.list):
-                j.quantify(rangelimit = True)
-                self.results.iloc[:,i] = j.data_sample['x']
-        else:
-            for i,j in enumerate(self.list):
-                j.quantify(rangelimit = False)
-                self.results.iloc[:,i] = j.data_sample['x']
-    def fit(self,optimize = True,target = "accuracy", lloq_crit = 0.2,crit = 0.15, order = 'weight' , rangemode = 'auto', selectmode = 'hloq stepdown',
-            lloq = 0, hloq = -1, weights = ['1','1/x^0.5','1/x','1/x^2'], fixpoints = [],model = lm,repeat_weight = True):
-        for i in self.list:
-            i.fit(optimize=optimize,target=target,lloq_crit=lloq_crit,crit=crit,order=order,rangemode=rangemode,selectmode=selectmode, 
-                      lloq=lloq, hloq=hloq, weights=weights, fixpoints=fixpoints,model=model,repeat_weight=repeat_weight)
-    def plot(self,n=2,neg = False,ylabel = 0, xlabel = 0):
-        plot_calibration_line(batch = self,n=n,neg = neg,ylabel = ylabel, xlabel = xlabel)
+        for ind,analyte in enumerate(self.calibration):
+            analyte.quantify(limit)
+            self.results.iloc[:,ind] = analyte.data_sample['x']
+    def fit(self, model = lm, target = xbias, crit = 0.15, lloq_crit = 0.2, order = 'weight' , rangemode = 'auto', selectmode = 'hloq stepdown',
+            lloq = 0, hloq = -1, weights = ['1','1/x^0.5','1/x','1/x^2'], fixpoints = [],repeat_weight = True):
+        for analyte in self.calibration:
+            analyte.fit(model, target, crit, lloq_crit, order=order,rangemode=rangemode,selectmode=selectmode, 
+                      lloq=lloq, hloq=hloq, weights=weights, fixpoints=fixpoints,repeat_weight=repeat_weight)
+    def plot(self,n=2,ylabel = 0, xlabel = 0):
+        plot_calibration_line(batch = self,n=n,ylabel = ylabel, xlabel = xlabel)
 
-def build_multical(self):
-    def __intit__(self):
-        self.multical = []
-        df = self.data_cal
-        xname = list(zip(*df.index))[0]
-        x = list(zip(*df.index))[1]
-        index = df.index
-        for i in range(len(df.columns)):
-            yname = df.columns[i]
-            for j in xname.unique():
-                y = df.iloc[:,i].loc[j].values
-                x = list(zip(*df.loc[j].index))[1]
-                score = np.zeros(len(y))
-                weight = np.ones(len(y))
-                dfa = pd.DataFrame({'x': x,'y': y,'select': score, 'accuracy': score,'weight': weight},index = index)

@@ -7,40 +7,29 @@ import re
 import random
 
 
+
 class linear():
-    def __init__(self,name,data_cal,data_sample,lloq,hloq,crit,lloq_crit,weights,
-                 optimize,target,order,rangemode,selectmode,fixpoints,repeat_weight):
-        self.name = name
+    def __init__(self, data_cal, data_sample, target, crit, lloq_crit,**kwargs):
+        np.seterr(divide='ignore')
         self.data_cal = data_cal
         self.data_sample = data_sample
         self.x = self.data_cal['x']
         self.y = self.data_cal['y']
         self.nobs = len(self.x)
         self.nlevel = len(self.x.unique())
-        self.step_level = 0
-        self.step_selection = 0
-        self.selection = False
-        self.done = False
-        self.lloq = lloq
-        self.hloq = hloq
+        self.target = target
         self.crit = crit
         self.lloq_crit = lloq_crit
-        self.weight_type = {'1': lambda x,y: 1,'1/x^0.5': lambda x,y: 1/np.sqrt(x),'1/x': lambda x,y: 1/x,'1/x^2': lambda x,y: 1/x**2,
+        self.weight_type = {'1': lambda x,y: np.repeat(1,len(x)),'1/x^0.5': lambda x,y: 1/np.sqrt(x),'1/x': lambda x,y: 1/x,'1/x^2': lambda x,y: 1/x**2,
                       '1/y^0.5': lambda x,y: 1/np.sqrt(y),'1/y': lambda x,y: 1/y,'1/y^2': lambda x,y: 1/y**2}
-        self.weights = weights
-        self.optimize = optimize
-        self.target = target
-        self.order = order
-        self.rangemode = rangemode
-        self.selectmode = selectmode
-        self.fixpoints = fixpoints
-        self.repeat_weight = repeat_weight
+        for k,v in kwargs.items():
+            setattr(self,k,v)
+            
     def initialize_selection(self):
         self.selection = False
         self.step_selection = 0
     def terminate_selection(self):
         if self.step_selection > self.nlevel:
-            self.done = True
             return True
         else: 
             return False
@@ -48,117 +37,105 @@ class linear():
         self.lloq += 1
         self.hloq += -1
         self.step_level = -1
-        self.nlevel += -1
-    def vscore(self,x,y,params):
-        if self.target == "accuracy":
-            return (y-params[0])/params[1]/x
-        elif self.target == "residual":
-            return (y-params[0])/params[1]-x
+        self.nlevel += -1   ####sequencial step
+
     def beta(self):
         beta = np.zeros([self.nobs,self.nobs])
         df = self.data_cal
-        for j in range(self.nobs):
-            for i in range(self.nobs):
-                if df.iloc[i,0]-df.iloc[j,0] != 0:
-                    beta[j,i] = (df.iloc[i,1]-df.iloc[j,1])/(df.iloc[i,0]-df.iloc[j,0])
+        for i in range(self.nobs):
+            beta[:,i] = (df.iloc[:,1]-df.iloc[i,1])/(df.iloc[:,0]-df.iloc[i,0])
         return beta
     def tstat(self):
-        tstat = self.beta().copy() 
-        def tscore(j,v):
-            if j != 0:
-                return ss.t.cdf(j,df = len(v)-1,loc = v.mean(),scale = v.std())
-            else:
-                return 0
+        tstat = self.beta()
         for i in range(self.nobs):
-            u = tstat[i,:]
-            v = u[u!=0]
-            tstat[i,:] = [tscore(j,v) for j in u]
+            v = tstat[i,:]
+            for ind,beta in enumerate(v):
+                if np.isinf(beta) or np.isnan(beta):
+                    v[ind] = -np.inf
+            u = v[v!=-np.inf]
+            tstat[i,:] = ss.t.cdf(v,df = len(u)-1,loc = u.mean(),scale = u.std())
         return tstat
     def tscore(self):
-        if self.repeat_weight == True:
+        if self.repeat_weight:
             return np.array([abs(sum(self.tstat()[:,k]/self.x)/sum(1/self.x)-0.5) for k in range(self.nobs)])
         else:
             return np.array([abs(sum(self.tstat()[:,k])-0.5) for k in range(self.nobs)])
     def select_repeat(self):
         score = self.tscore()
-        self.select_r = np.zeros(self.nobs)
+        self.select_initial = np.zeros(self.nobs)
         for i in self.x:
-            self.select_r[score == min(score[self.x.values == i])] = 1
-    def check_bias(self,acc):
-        if self.target == "accuracy":
-            return  max(abs(acc[1:]-1)) < self.crit and abs(acc[0]-1) < self.lloq_crit
-        elif self.target == "residual":
-            return  max(abs(acc[1:])) < self.crit and abs(acc[0]) < self.lloq_crit
+            self.select_initial[score == min(score[self.x.values == i])] = 1
+    def check_bias(self,score):
+        return  max(abs(score[1:])) < self.crit and abs(score[0]) < self.lloq_crit
     def transfer_selection(self,model):
-        self.select_p = np.zeros(self.nobs)
-        k = 0
-        while k < len(model.y):
-            for j in range(self.nobs):
-                if self.y.values[j] == model.y[k]:
-                    self.select_p[j] = 1
-                    k += 1
-                    break
+        self.select_final = np.zeros(self.nobs)
+        for i in range(self.nobs):
+            if self.select_initial[i] == 1:
+                if self.y.values[i] not in model.y:
+                    self.select_final[i] = 0   ### test
         self.model = model
-    def select_level(self,model):
+    def newmodels(self,model_temp,ind,model):
+        level = self.x.unique()
+        to_del = np.where(level == model_temp.x[ind])[0]
+        if ind == 0:
+            prev = 0
+        else:
+            prev = to_del - np.where(level == model_temp.x[ind-1])[0]
+        if ind == len(model_temp.x)-1:
+            next = 0
+        else:
+            next = np.where(level == model_temp.x[ind+1])[0] - to_del
+        if (prev < 3) and (next < 3):
+            x = np.delete(model_temp.x,ind,0)
+            y = np.delete(model_temp.y,ind,0)
+            w = self.weight_type[self.weight](x,y)
+            model_test = model(x,y,w)
+            model_test.fit()
+            return model_test
+        else:
+            return None
+    def select_level(self,model): ### O(n^2)
         fixlevel = self.fixlevel()
-        x = np.array(self.x.loc[self.select_r == 1],dtype = float)
-        y = np.array(self.y.loc[self.select_r == 1],dtype = float)
+        x = np.array(self.x.loc[self.select_initial == 1],dtype = float)
+        y = np.array(self.y.loc[self.select_initial == 1],dtype = float)
         w = self.weight_type[self.weight](x,y)
         model_temp = model(x,y,w)
-        if self.check_bias(model_temp.vscore(self.target)):
+        model_temp.fit()
+        if self.check_bias(model_temp.score(self.target)):
             self.transfer_selection(model_temp)
             self.done = True
         else:
             while True:
-                model_win = model_temp
-                for i in range(len(model_temp.y)):
-                    if model_temp.x[i] not in fixlevel:
-                        try:
-                            if model_temp.x[i+1,1] < 10*model_temp.x[i-1,1]:
-                                x = np.delete(model_temp.x.copy(),i,0)
-                                y = np.delete(model_temp.y.copy(),i,0)
-                                w = self.weight_type[self.weight](x,y)
-                                model_test = model(x,y,w)
-                                if model_test.score(self.target) < model_win.score(self.target):
-                                    model_win = model_test
-                        except:
-                            x = np.delete(model_temp.x.copy(),i,0)
-                            y = np.delete(model_temp.y.copy(),i,0)
-                            w = self.weight_type[self.weight](x,y)
-                            model_test = model(x,y,w)
-                            if model_test.score(self.target) < model_win.score(self.target):
-                                model_win = model_test
-                if len(model_win.x) != len(model_temp.x):
-                    model_temp = model_win
-                    if self.check_bias(model_temp.vscore(self.target)) or len(model_temp.y) < 7:
-                        if self.check_bias(model_temp.vscore(self.target)):
-                            self.done = True
+                models = [self.newmodels(model_temp,ind,model) for ind in range(model_temp.nobs) if model_temp.x[ind] not in fixlevel]
+                models = [m for m in models if m]
+                scores = np.array([m.score(self.target).sum()/m.nobs for m in models])
+                ind = scores.argmin()
+                if models[ind].nobs != model_temp.nobs:
+                    model_temp = models[ind]
+                    if self.check_bias(model_temp.score(self.target)):
+                        self.done = True
+                        self.transfer_selection(model_temp)
+                        break
+                    elif model_temp.nobs < 7:
                         self.transfer_selection(model_temp)
                         break
                 else:
                     self.transfer_selection(model_temp)
                     break
-    def check_repeat(self):
+    def check_repeat(self): ### O(n^2)
         self.selection = True
-        for k in self.model.x:
-            if self.target == "accuracy":
-                true =  min(abs(self.vscore(self.x,self.y,self.model.fit.params)-1).loc[self.x.values == k])
-                bias = abs(self.vscore(self.x,self.y,self.model.fit.params)-1)
-            elif self.target == "residual":
-                true =  min(abs(self.vscore(self.x,self.y,self.model.fit.params)).loc[self.x.values == k])
-                bias = abs(self.vscore(self.x,self.y,self.model.fit.params))
-            for j in range(self.nobs):
-                if self.x.values[j] != k:
-                    pass
-                elif true != bias.values[j]:
-                    if self.select_r[j] == 1:
-                        self.selection = False
-                        self.select_r[j] = 0
-                else:
-                    self.select_r[j] = 1
-            if not self.selection:
-                self.done = False
-                break
+        bias = abs(self.target(self.x,self.y,self.model.beta))
+        for ind in range(self.nobs):
+            value = self.x.values[ind]
+            true =  min(bias.loc[self.x.values == value])
+            if (self.select_initial[ind] == 1) and (true != bias.values[ind]):
+                self.selection = False
+                self.select_initial[ind] = 0
+            elif (self.select_initial[ind] == 0) and (true == bias.values[ind]):
+                self.selection = False
+                self.select_initial[ind] = 1
+        if not self.selection:
+            self.done = False
     def check_nlevel(self):
         fixlevel = self.fixlevel()
         if self.done:
@@ -181,18 +158,17 @@ class linear():
             if max(df.loc[df['y'] < max(self.y),'y']) > max(fixlevel) or min(df.loc[df['y'] > min(self.y),'y']) < min(fixlevel):
                 print("fixlevel doesn't cover sample range, try different weight or selectmode")
                 return False
+        else:
+            return False
     def circle_selection(self,model):
         self.initialize_selection()
-        while not self.selection:
+        while not self.selection: ### O(n^3)
             self.select_level(model)
             self.check_repeat()
             self.step_selection += 1
             if self.terminate_selection():
                 break
-        if self.target == "accuracy":
-            print(pd.DataFrame({'x':self.model.x,'y':self.model.y,'accuracy': self.model.vscore(self.target),'weight': self.model.w}))
-        elif self.target == "residual":
-            print(pd.DataFrame({'x':self.model.x,'y':self.model.y,'residual': self.model.vscore(self.target),'weight': self.model.w}))
+        print(pd.DataFrame({'x':self.model.x,'y':self.model.y,'score': self.model.score(self.target),'weight': self.model.w}))
     def fix(self):
         if len(self.fixpoints) != 0:
             return lambda i: self.fixpoints[i]
@@ -207,14 +183,16 @@ class linear():
     def fixlevel(self):
         return [self.x.unique()[i] for i in self.fix()(self.step_level)]
     def fit(self,model):
-        if type(self.data_sample) == str:
+        if not self.data_sample:
             print('Sample not supplied, changing rangemode to unlimited')
             self.rangemode = 'unlimited'
-        print(self.name)
         self.select_repeat()
+        self.selection = False
+        self.done = False
         if self.order == 'weight':
-            while not self.done:
-                for w in self.weights:
+            self.step_level = 0
+            while not self.done: ### O(n^4)
+                for w in self.weights: 
                     print('weight: {}'.format(w))
                     self.weight = w
                     self.circle_selection(model)
@@ -235,7 +213,7 @@ class linear():
                         break
                     else:
                         self.step_level += 1
-                if self.done == True:
+                if self.done:
                     break
         elif self.order == 'weight only':
             for w in self.weights:
@@ -244,3 +222,34 @@ class linear():
                 self.circle_selection()
                 if self.done:
                     break   
+
+
+
+
+def beta(df,nobs):
+    beta = np.zeros([nobs,nobs])
+    for j in range(nobs):
+        for i in range(nobs):
+            if df.iloc[i,0]-df.iloc[j,0] != 0:
+                beta[j,i] = (df.iloc[i,1]-df.iloc[j,1])/(df.iloc[i,0]-df.iloc[j,0])
+    return beta
+def beta_tstat(df,nobs):
+    tstat = self.beta(df,nobs)
+    def tscore(j,v):
+        if j != 0:
+            return ss.t.cdf(j,df = len(v)-1,loc = v.mean(),scale = v.std())
+        else:
+            return 0
+    for i in range(self.nobs):
+        u = tstat[i,:]
+        v = u[u!=0]
+        tstat[i,:] = [tscore(j,v) for j in u]
+    return tstat
+def beta_tscore(df,nobs,repeat_weight):
+    if repeat_weight == True:
+        return np.array([abs(sum(beta_tstat(df,nobs)[:,k]/df.loc['x'])/sum(1/df.loc['x'])-0.5) for k in range(nobs)])
+    else:
+        return np.array([abs(sum(self.tstat(df,nobs)[:,k])/sum(1/df.loc['x'])-0.5) for k in range(nobs)])
+
+
+
