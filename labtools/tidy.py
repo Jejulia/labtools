@@ -114,8 +114,9 @@ def stats(df, Stats = ['mean', 'sd', 'rsd']):
     row_list = []
     for sample in samples:
         for stats in Stats:
-            exec('{} = __{}__(df.loc[sample])'.format(stats, stats))
-            exec('row_list.append({})'.format(stats))
+            row_list.append(eval('__{}__'.format(stats))(df.loc[sample]))
+            #exec('{} = __{}__(df.loc[sample])'.format(stats, stats))
+            #exec('row_list.append({})'.format(stats))
     index1 = np.repeat(samples, len(Stats))
     index2 = np.repeat([Stats], len(samples), axis=0).ravel()
     dfstats = pd.DataFrame(row_list).set_index([index1, index2]).set_axis(df.columns, axis=1)._set_axis_name(['Samples','Stats'])._set_axis_name(['Analyte'], axis=1)
