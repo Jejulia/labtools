@@ -1,5 +1,5 @@
 """Various tools for Agilent MS-based quantification"""
-from . import model, plot, tidy, pciis, optimizer
+from . import model, plot, tidy, pciis, optimizer, example, __main__
 
 """
 try:
