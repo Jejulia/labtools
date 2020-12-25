@@ -2,6 +2,7 @@ from tkinter.filedialog import askopenfilename, asksaveasfilename
 import numpy as np
 import pandas as pd
 import argparse
+import ast
 
 def tidy(file, parameter='ISTD Resp. Ratio', cal=False):
     # available parameter: 'ISTD Resp. Ratio', 'Area', 'Final Conc.', 'Resp.', etc
@@ -114,7 +115,7 @@ def stats(df, Stats = ['mean', 'sd', 'rsd']):
     row_list = []
     for sample in samples:
         for stats in Stats:
-            row_list.append(eval('__{}__'.format(stats))(df.loc[sample]))
+            row_list.append(ast.literal_eval('__{}__'.format(stats))(df.loc[sample]))
             #exec('{} = __{}__(df.loc[sample])'.format(stats, stats))
             #exec('row_list.append({})'.format(stats))
     index1 = np.repeat(samples, len(Stats))
