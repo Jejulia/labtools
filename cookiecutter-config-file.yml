@@ -1,0 +1,10 @@
+# This file contains values from Cookiecutter
+
+default_context:
+  project_name: "labtools"
+  project_description: "Various tools for Agilent MS-based quantification"
+  organization: "Jejulia"
+  license: "MIT"
+  version: "0.1.0"
+  github_name: "Jejulia"
+  email: "sciphypar@gmail.com"
