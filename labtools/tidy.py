@@ -40,15 +40,29 @@ def tidy(file, parameter='ISTD Resp. Ratio', cal=False):
     return df
 
 # default stats method
-def __mean__(df):
+global statsfoo 
+statsfoo = {}
+
+def mean(df):
     return df.mean()
 
-def __sd__(df):
+
+def sd(df):
     return df.std()
 
-def __rsd__(df):
+def rsd(df):
     return __sd__(df)/__mean__(df)
 
+
+def addstats(foo, name = ""):
+    if name:
+        statsfoo[name] = foo
+    else:
+        statsfoo[foo.__name__] = foo
+    return 
+
+for foo in [mean, sd, rsd]:
+    statsfoo(foo)
 
 
 def stats(df, Stats = ['mean', 'sd', 'rsd']):
@@ -96,16 +110,16 @@ def stats(df, Stats = ['mean', 'sd', 'rsd']):
 
     >>> def rsd_per(df):
             return df.std()/df.mean() * 100
-    >>> lbt.__setattr__('__rsd_per__', rsd_per)
-    >>> lbt.stats(df, ['mean', 'sd', 'rsd_per'])
+    >>> lbt.addstats(rsd_per, "RSD(%)")
+    >>> lbt.stats(df, ['mean', 'sd', "RSD(%)"])
              Analyte           A          B                          
     Samples    Stats
           a     mean    0.500000   1.500000     
                   sd    0.707107   0.707107
-             rsd_per  141.421356  47.140452
+              RSD(%)  141.421356  47.140452
           b     mean    2.500000   3.500000
                   sd    0.707107   0.707107
-             rsd_per   28.284271  20.203051
+              RSD(%)   28.284271  20.203051
 
     """
     samples, _ = zip(*list(df.index))
@@ -114,7 +128,7 @@ def stats(df, Stats = ['mean', 'sd', 'rsd']):
     row_list = []
     for sample in samples:
         for stats in Stats:
-            row_list.append(eval('__{}__'.format(stats))(df.loc[sample]))
+            row_list.append(statsfoo[stats](df.loc[sample]))
             #exec('{} = __{}__(df.loc[sample])'.format(stats, stats))
             #exec('row_list.append({})'.format(stats))
     index1 = np.repeat(samples, len(Stats))
