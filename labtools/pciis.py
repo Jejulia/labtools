@@ -51,7 +51,7 @@ def quantify(chrom,trans,save=False):
     # filter chromatography
     
     result = [interpolate1(df,rt) for df in df_chrom.values()]
-    mat_chrom = np.vstack(list(zip(*result))[0]).transpose()
+    mat_chrom = np.vstack(list(zip(*result))[0]).transpose() # rt x trans
     name = list(zip(*result))[1]
 
     # Calculate ratio
@@ -61,20 +61,20 @@ def quantify(chrom,trans,save=False):
     datafile = [re.sub('.*[) ]',"",i) for i in datafile]
     pci_index = trans == pci_trans
     mat_pci = mat_chrom[:,pci_index]
-    for i in range(len(df_trans.index)-1):
-        mat_pci = np.hstack([mat_pci,mat_chrom[:,pci_index]])
-    mat_chrom = mat_chrom/mat_pci
+    ntrans = len(pci_index)
+    for ind in range(mat_chrom.shape[1]//ntrans):
+        mat_chrom[:,range(ntrans*ind,ntrans*ind+ntrans)] = mat_chrom[:,range(ntrans*ind,ntrans*ind+ntrans)]/mat_pci
     
     # Peak computing
 
     dict_range = dict()
-    for i in df_trans.index:
-        if i == pci_trans:
-            dict_range[i] = list(range(len(rt)))
+    for tran in df_trans.index:
+        if tran == pci_trans:
+            dict_range[tran] = list(range(len(rt)))
         else:
-            dict_range[i] = [j for j,k in enumerate(rt) if k > df_trans.loc[i,'RT.s'] and k < df_trans.loc[i,'RT.e']]
+            dict_range[tran] = [ind for ind,time in enumerate(rt) if time > df_trans.loc[tran,'RT.s'] and time < df_trans.loc[tran,'RT.e']]
             
-    mat_chrom = np.array([sumif(mat_chrom,i,trans,dict_range) for i in range(len(datafile))])
+    mat_chrom = np.array([sum(mat_chrom[dict_range[trans[ind]],ind])-sum(mat_chrom[dict_range[trans[ind]][[0,-1]],ind][[0,-1]])/2 for ind in range(len(datafile))])
     
     # data assembly
     
